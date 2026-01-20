@@ -122,7 +122,7 @@ class EmbeddingGenerator:
         if not chunks:
             return chunks
 
-        logger.info(f"Generating embeddings for {len(chunks)} chunks")
+        logger.info(f"Gerando embeddings para {len(chunks)} chunks")
 
         # Process chunks in batches
         embedded_chunks = []
@@ -157,9 +157,9 @@ class EmbeddingGenerator:
             if progress_callback:
                 progress_callback(current_batch, total_batches)
 
-            logger.info(f"Processed batch {current_batch}/{total_batches}")
+            logger.info(f"Lote {current_batch}/{total_batches} processado")
 
-        logger.info(f"Generated embeddings for {len(embedded_chunks)} chunks")
+        logger.info(f"Embeddings gerados para {len(embedded_chunks)} chunks")
         return embedded_chunks
 
     async def embed_query(self, query: str) -> List[float]:

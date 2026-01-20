@@ -21,56 +21,56 @@ def validate_config() -> bool:
     """
     try:
         print("=" * 60)
-        print("MongoDB RAG Agent - Configuration Validation")
+        print("MongoDB RAG Agent - Validação de Configuração")
         print("=" * 60)
         print()
 
         # Load settings
-        print("[1/4] Loading settings...")
+        print("[1/4] Carregando configurações...")
         settings = load_settings()
-        print("[OK] Settings loaded successfully")
+        print("[OK] Configurações carregadas com sucesso")
         print()
 
         # Validate MongoDB configuration
-        print("[2/4] Validating MongoDB configuration...")
+        print("[2/4] Validando configuração do MongoDB...")
         print(f"  MongoDB URI: {mask_credential(settings.mongodb_uri)}")
         print(f"  Database: {settings.mongodb_database}")
-        print(f"  Documents Collection: {settings.mongodb_collection_documents}")
-        print(f"  Chunks Collection: {settings.mongodb_collection_chunks}")
-        print(f"  Vector Index: {settings.mongodb_vector_index}")
-        print(f"  Text Index: {settings.mongodb_text_index}")
-        print("[OK] MongoDB configuration present")
+        print(f"  Coleção de Documentos: {settings.mongodb_collection_documents}")
+        print(f"  Coleção de Chunks: {settings.mongodb_collection_chunks}")
+        print(f"  Índice Vetorial: {settings.mongodb_vector_index}")
+        print(f"  Índice de Texto: {settings.mongodb_text_index}")
+        print("[OK] Configuração do MongoDB presente")
         print()
 
         # Validate LLM configuration
-        print("[3/4] Validating LLM configuration...")
+        print("[3/4] Validando configuração do LLM...")
         model_info = get_model_info()
-        print(f"  Provider: {model_info['llm_provider']}")
-        print(f"  Model: {model_info['llm_model']}")
-        print(f"  Base URL: {model_info['llm_base_url']}")
-        print(f"  API Key: {mask_credential(settings.llm_api_key)}")
-        print("[OK] LLM configuration present")
+        print(f"  Provedor: {model_info['llm_provider']}")
+        print(f"  Modelo: {model_info['llm_model']}")
+        print(f"  URL Base: {model_info['llm_base_url']}")
+        print(f"  Chave API: {mask_credential(settings.llm_api_key)}")
+        print("[OK] Configuração do LLM presente")
         print()
 
         # Validate Embedding configuration
-        print("[4/4] Validating Embedding configuration...")
-        print(f"  Provider: {settings.embedding_provider}")
-        print(f"  Model: {settings.embedding_model}")
-        print(f"  Dimension: {settings.embedding_dimension}")
-        print(f"  API Key: {mask_credential(settings.embedding_api_key)}")
-        print("[OK] Embedding configuration present")
+        print("[4/4] Validando configuração de Embeddings...")
+        print(f"  Provedor: {settings.embedding_provider}")
+        print(f"  Modelo: {settings.embedding_model}")
+        print(f"  Dimensão: {settings.embedding_dimension}")
+        print(f"  Chave API: {mask_credential(settings.embedding_api_key)}")
+        print("[OK] Configuração de Embeddings presente")
         print()
 
         # Success summary
         print("=" * 60)
-        print("[OK] ALL CONFIGURATION CHECKS PASSED")
+        print("[OK] TODAS AS VERIFICAÇÕES DE CONFIGURAÇÃO PASSARAM")
         print("=" * 60)
         print()
-        print("Next steps:")
-        print("1. Add documents to the ./documents/ folder")
-        print("2. Run ingestion: uv run python -m src.ingestion.ingest -d ./documents")
-        print("3. Create search indexes in MongoDB Atlas (after ingestion completes)")
-        print("   See README.md for index creation instructions")
+        print("Próximos passos:")
+        print("1. Adicione documentos na pasta ./documents/")
+        print("2. Execute a ingestão: uv run python -m src.ingestion.ingest -d ./documents")
+        print("3. Crie os índices de busca no MongoDB Atlas (após a ingestão concluir)")
+        print("   Veja README.md para instruções de criação de índices")
         print()
 
         return True
@@ -78,23 +78,23 @@ def validate_config() -> bool:
     except ValueError as e:
         print()
         print("=" * 60)
-        print("[FAIL] CONFIGURATION VALIDATION FAILED")
+        print("[FALHA] VALIDAÇÃO DE CONFIGURAÇÃO FALHOU")
         print("=" * 60)
         print()
-        print(f"Error: {e}")
+        print(f"Erro: {e}")
         print()
-        print("Please check your .env file and ensure all required variables are set.")
-        print("See .env.example for required variables.")
+        print("Por favor, verifique seu arquivo .env e certifique-se de que todas as variáveis necessárias estão definidas.")
+        print("Veja .env.example para as variáveis necessárias.")
         print()
         return False
 
     except Exception as e:
         print()
         print("=" * 60)
-        print("[FAIL] UNEXPECTED ERROR")
+        print("[FALHA] ERRO INESPERADO")
         print("=" * 60)
         print()
-        print(f"Error: {e}")
+        print(f"Erro: {e}")
         print()
         import traceback
 

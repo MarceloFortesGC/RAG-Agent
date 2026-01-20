@@ -2,6 +2,7 @@
 """Conversational CLI with real-time streaming and tool call visibility."""
 
 import asyncio
+import sys
 from typing import List
 
 from rich.console import Console
@@ -15,7 +16,7 @@ from dotenv import load_dotenv
 
 # Import our agent and dependencies
 from src.agent import rag_agent, RAGState
-from src.settings import load_settings
+from src.settings import load_settings, validate_environment_variables
 
 # Load environment variables
 load_dotenv(override=True)
@@ -42,7 +43,7 @@ async def stream_agent_interaction(
     try:
         return await _stream_agent(user_input, deps, message_history)
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]Erro: {e}[/red]")
         import traceback
         traceback.print_exc()
         return ("", [])
@@ -73,7 +74,7 @@ async def _stream_agent(
             # Handle model request node - stream the thinking process
             elif Agent.is_model_request_node(node):
                 # Show assistant prefix at the start
-                console.print("[bold blue]Assistant:[/bold blue] ", end="")
+                console.print("[bold blue]Assistente:[/bold blue] ", end="")
 
                 # Stream model request events for real-time text
                 async with node.stream(run.ctx) as request_stream:
@@ -125,24 +126,24 @@ async def _stream_agent(
                                 elif hasattr(part, 'arguments'):
                                     args = part.arguments
 
-                            console.print(f"  [cyan]Calling tool:[/cyan] [bold]{tool_name}[/bold]")
+                            console.print(f"  [cyan]Chamando ferramenta:[/cyan] [bold]{tool_name}[/bold]")
 
                             # Show search query if it's a search tool
                             if args and isinstance(args, dict):
                                 if 'query' in args:
-                                    console.print(f"    [dim]Query:[/dim] {args['query']}")
+                                    console.print(f"    [dim]Consulta:[/dim] {args['query']}")
                                 if 'search_type' in args:
-                                    console.print(f"    [dim]Type:[/dim] {args['search_type']}")
+                                    console.print(f"    [dim]Tipo:[/dim] {args['search_type']}")
                                 if 'match_count' in args:
-                                    console.print(f"    [dim]Results:[/dim] {args['match_count']}")
+                                    console.print(f"    [dim]Resultados:[/dim] {args['match_count']}")
                             elif args:
                                 args_str = str(args)
                                 if len(args_str) > 100:
                                     args_str = args_str[:97] + "..."
-                                console.print(f"    [dim]Args: {args_str}[/dim]")
+                                console.print(f"    [dim]Argumentos: {args_str}[/dim]")
 
                         elif event_type == "FunctionToolResultEvent":
-                            console.print(f"  [green]Search completed successfully[/green]")
+                            console.print(f"  [green]Busca concluída com sucesso[/green]")
 
             # Handle end node
             elif Agent.is_end_node(node):
@@ -165,9 +166,9 @@ def display_welcome():
 
     welcome = Panel(
         "[bold blue]MongoDB RAG Agent[/bold blue]\n\n"
-        "[green]Intelligent knowledge base search with MongoDB Atlas Vector Search[/green]\n"
+        "[green]Busca inteligente em base de conhecimento com MongoDB Atlas Vector Search[/green]\n"
         f"[dim]LLM: {settings.llm_model}[/dim]\n\n"
-        "[dim]Type 'exit' to quit, 'info' for system info, 'clear' to clear screen[/dim]",
+        "[dim]Digite 'exit' para sair, 'info' para informações do sistema, 'clear' para limpar a tela[/dim]",
         style="blue",
         padding=(1, 2)
     )
@@ -178,6 +179,18 @@ def display_welcome():
 async def main():
     """Main conversation loop."""
 
+    # Validar variáveis de ambiente primeiro
+    valido, erros = validate_environment_variables()
+    if not valido:
+        console.print("[red]Erro: Variáveis de ambiente inválidas[/red]")
+        console.print()
+        for erro in erros:
+            console.print(f"  • {erro}")
+        console.print()
+        console.print("Por favor, verifique seu arquivo .env e certifique-se de que todas as variáveis necessárias estão definidas.")
+        console.print("Veja .env.example para as variáveis necessárias.")
+        sys.exit(1)
+
     # Show welcome
     display_welcome()
 
@@ -187,7 +200,7 @@ async def main():
     # Create StateDeps wrapper with the state
     deps = StateDeps[RAGState](state=state)
 
-    console.print("[bold green]✓[/bold green] Search system initialized\n")
+    console.print("[bold green]✓[/bold green] Sistema de busca inicializado\n")
 
     # Initialize message history with proper Pydantic AI message objects
     message_history = []
@@ -196,22 +209,22 @@ async def main():
         while True:
             try:
                 # Get user input
-                user_input = Prompt.ask("[bold green]You").strip()
+                user_input = Prompt.ask("[bold green]Você").strip()
 
                 # Handle special commands
                 if user_input.lower() in ['exit', 'quit', 'q']:
-                    console.print("\n[yellow]👋 Goodbye![/yellow]")
+                    console.print("\n[yellow]👋 Até logo![/yellow]")
                     break
 
                 elif user_input.lower() == 'info':
                     settings = load_settings()
                     console.print(Panel(
-                        f"[cyan]LLM Provider:[/cyan] {settings.llm_provider}\n"
-                        f"[cyan]LLM Model:[/cyan] {settings.llm_model}\n"
-                        f"[cyan]Embedding Model:[/cyan] {settings.embedding_model}\n"
-                        f"[cyan]Default Match Count:[/cyan] {settings.default_match_count}\n"
-                        f"[cyan]Default Text Weight:[/cyan] {settings.default_text_weight}",
-                        title="System Configuration",
+                        f"[cyan]Provedor LLM:[/cyan] {settings.llm_provider}\n"
+                        f"[cyan]Modelo LLM:[/cyan] {settings.llm_model}\n"
+                        f"[cyan]Modelo de Embedding:[/cyan] {settings.embedding_model}\n"
+                        f"[cyan]Contagem Padrão de Resultados:[/cyan] {settings.default_match_count}\n"
+                        f"[cyan]Peso Padrão de Texto:[/cyan] {settings.default_text_weight}",
+                        title="Configuração do Sistema",
                         border_style="magenta"
                     ))
                     continue
@@ -238,17 +251,17 @@ async def main():
                 console.print()
 
             except KeyboardInterrupt:
-                console.print("\n[yellow]Use 'exit' to quit[/yellow]")
+                console.print("\n[yellow]Use 'exit' para sair[/yellow]")
                 continue
 
             except Exception as e:
-                console.print(f"[red]Error: {e}[/red]")
+                console.print(f"[red]Erro: {e}[/red]")
                 import traceback
                 traceback.print_exc()
                 continue
 
     finally:
-        console.print("\n[dim]Goodbye![/dim]")
+        console.print("\n[dim]Até logo![/dim]")
 
 
 if __name__ == "__main__":

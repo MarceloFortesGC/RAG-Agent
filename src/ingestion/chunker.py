@@ -87,7 +87,7 @@ class DoclingHybridChunker:
 
         # Initialize tokenizer for token-aware chunking
         model_id = "sentence-transformers/all-MiniLM-L6-v2"
-        logger.info(f"Initializing tokenizer: {model_id}")
+        logger.info(f"Inicializando tokenizador: {model_id}")
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
 
         # Create HybridChunker
@@ -97,7 +97,7 @@ class DoclingHybridChunker:
             merge_peers=True  # Merge small adjacent chunks
         )
 
-        logger.info(f"HybridChunker initialized (max_tokens={config.max_tokens})")
+        logger.info(f"HybridChunker inicializado (max_tokens={config.max_tokens})")
 
     async def chunk_document(
         self,
@@ -135,7 +135,7 @@ class DoclingHybridChunker:
             # For markdown content, we need to convert it to DoclingDocument
             # This is a simplified version - in practice, content comes from
             # Docling's document converter in the ingestion pipeline
-            logger.warning("No DoclingDocument provided, using simple chunking fallback")
+            logger.warning("Nenhum DoclingDocument fornecido, usando fallback de chunking simples")
             return self._simple_fallback_chunk(content, base_metadata)
 
         try:
@@ -177,11 +177,11 @@ class DoclingHybridChunker:
 
                 current_pos = end_char
 
-            logger.info(f"Created {len(document_chunks)} chunks using HybridChunker")
+            logger.info(f"Criados {len(document_chunks)} chunks usando HybridChunker")
             return document_chunks
 
         except Exception as e:
-            logger.error(f"HybridChunker failed: {e}, falling back to simple chunking")
+            logger.error(f"HybridChunker falhou: {e}, usando fallback de chunking simples")
             return self._simple_fallback_chunk(content, base_metadata)
 
     def _simple_fallback_chunk(
@@ -252,7 +252,7 @@ class DoclingHybridChunker:
         for chunk in chunks:
             chunk.metadata["total_chunks"] = len(chunks)
 
-        logger.info(f"Created {len(chunks)} chunks using simple fallback")
+        logger.info(f"Criados {len(chunks)} chunks usando fallback simples")
         return chunks
 
 

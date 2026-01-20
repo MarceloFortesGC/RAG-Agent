@@ -4,6 +4,7 @@ from pydantic_settings import BaseSettings
 from pydantic import Field, ConfigDict
 from dotenv import load_dotenv
 from typing import Optional
+import os
 
 # Load environment variables from .env file
 load_dotenv()
@@ -89,16 +90,56 @@ class Settings(BaseSettings):
     )
 
 
+def validate_environment_variables() -> tuple[bool, list[str]]:
+    """
+    Valida todas as variáveis de ambiente obrigatórias.
+    
+    Returns:
+        Tuple de (sucesso: bool, erros: list[str])
+    """
+    erros = []
+    
+    # Variáveis obrigatórias
+    variaveis_obrigatorias = {
+        "MONGODB_URI": "URI de conexão do MongoDB Atlas",
+        "LLM_API_KEY": "Chave API do provedor LLM",
+        "EMBEDDING_API_KEY": "Chave API do provedor de embeddings"
+    }
+    
+    # Verificar presença e valores não vazios
+    for var_name, descricao in variaveis_obrigatorias.items():
+        valor = os.getenv(var_name)
+        if not valor or not valor.strip():
+            erros.append(f"{var_name} ({descricao}) não está definida ou está vazia")
+    
+    # Validar formato do MongoDB URI
+    mongodb_uri = os.getenv("MONGODB_URI", "").strip()
+    if mongodb_uri:
+        if not (mongodb_uri.startswith("mongodb://") or mongodb_uri.startswith("mongodb+srv://")):
+            erros.append("MONGODB_URI deve começar com 'mongodb://' ou 'mongodb+srv://'")
+    
+    # Validar que API keys não são apenas espaços
+    llm_key = os.getenv("LLM_API_KEY", "").strip()
+    if llm_key and len(llm_key) < 10:
+        erros.append("LLM_API_KEY parece ser inválida (muito curta)")
+    
+    embedding_key = os.getenv("EMBEDDING_API_KEY", "").strip()
+    if embedding_key and len(embedding_key) < 10:
+        erros.append("EMBEDDING_API_KEY parece ser inválida (muito curta)")
+    
+    return (len(erros) == 0, erros)
+
+
 def load_settings() -> Settings:
     """Load settings with proper error handling."""
     try:
         return Settings()
     except Exception as e:
-        error_msg = f"Failed to load settings: {e}"
+        error_msg = f"Falha ao carregar configurações: {e}"
         if "mongodb_uri" in str(e).lower():
-            error_msg += "\nMake sure to set MONGODB_URI in your .env file"
+            error_msg += "\nCertifique-se de definir MONGODB_URI no seu arquivo .env"
         if "llm_api_key" in str(e).lower():
-            error_msg += "\nMake sure to set LLM_API_KEY in your .env file"
+            error_msg += "\nCertifique-se de definir LLM_API_KEY no seu arquivo .env"
         if "embedding_api_key" in str(e).lower():
-            error_msg += "\nMake sure to set EMBEDDING_API_KEY in your .env file"
+            error_msg += "\nCertifique-se de definir EMBEDDING_API_KEY no seu arquivo .env"
         raise ValueError(error_msg) from e

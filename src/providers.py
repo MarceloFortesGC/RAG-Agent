@@ -76,5 +76,5 @@ def validate_llm_configuration() -> bool:
         get_llm_model()
         return True
     except Exception as e:
-        print(f"LLM configuration validation failed: {e}")
+        print(f"Validação da configuração do LLM falhou: {e}")
         return False

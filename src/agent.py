@@ -81,16 +81,16 @@ async def search_knowledge_base(
 
         # Format results as a simple string
         if not results:
-            return "No relevant information found in the knowledge base."
+            return "Nenhuma informação relevante encontrada na base de conhecimento."
 
         # Build a formatted response
-        response_parts = [f"Found {len(results)} relevant documents:\n"]
+        response_parts = [f"Encontrados {len(results)} documentos relevantes:\n"]
 
         for i, result in enumerate(results, 1):
-            response_parts.append(f"\n--- Document {i}: {result.document_title} (relevance: {result.similarity:.2f}) ---")
+            response_parts.append(f"\n--- Documento {i}: {result.document_title} (relevância: {result.similarity:.2f}) ---")
             response_parts.append(result.content)
 
         return "\n".join(response_parts)
 
     except Exception as e:
-        return f"Error searching knowledge base: {str(e)}"
+        return f"Erro ao buscar na base de conhecimento: {str(e)}"
