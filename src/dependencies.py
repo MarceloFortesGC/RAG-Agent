@@ -37,7 +37,7 @@ class AgentDependencies:
         """
         if not self.settings:
             self.settings = load_settings()
-            logger.info(f"configuracoes_carregadas: database={self.settings.mongodb_database}")
+            logger.info(f"Configurações carregadas: database={self.settings.mongodb_database}")
 
         # Initialize MongoDB client
         if not self.mongo_client:
@@ -50,12 +50,12 @@ class AgentDependencies:
                 # Verify connection with ping
                 await self.mongo_client.admin.command("ping")
                 logger.info(
-                    f"mongodb_conectado: database={self.settings.mongodb_database}, "
+                    f"MongoDB conectado: database={self.settings.mongodb_database}, "
                     f"collections={{documents: {self.settings.mongodb_collection_documents}, "
                     f"chunks: {self.settings.mongodb_collection_chunks}}}"
                 )
             except (ConnectionFailure, ServerSelectionTimeoutError) as e:
-                logger.exception("mongodb_connection_failed", error=str(e))
+                logger.exception(f"Falha na conexão MongoDB: erro={str(e)}")
                 raise
 
         # Initialize OpenAI client for embeddings
@@ -65,7 +65,7 @@ class AgentDependencies:
                 base_url=self.settings.embedding_base_url,
             )
             logger.info(
-                f"cliente_openai_inicializado: model={self.settings.embedding_model}, "
+                f"Cliente OpenAI inicializado: model={self.settings.embedding_model}, "
                 f"dimension={self.settings.embedding_dimension}"
             )
 
@@ -75,7 +75,7 @@ class AgentDependencies:
             await self.mongo_client.close()
             self.mongo_client = None
             self.db = None
-            logger.info("conexao_mongodb_fechada")
+            logger.info("Conexão MongoDB fechada")
 
     async def get_embedding(self, text: str) -> list[float]:
         """

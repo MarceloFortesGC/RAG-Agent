@@ -111,7 +111,7 @@ async def semantic_search(
         ]
 
         logger.info(
-            f"busca_semantica_concluida: query={query}, resultados={len(search_results)}, match_count={match_count}"
+            f"Busca semântica concluída: query={query}, resultados={len(search_results)}, match_count={match_count}"
         )
 
         return search_results
@@ -119,12 +119,12 @@ async def semantic_search(
     except OperationFailure as e:
         error_code = e.code if hasattr(e, 'code') else None
         logger.error(
-            f"busca_semantica_falhou: query={query}, erro={str(e)}, codigo={error_code}"
+            f"Busca semântica falhou: query={query}, erro={str(e)}, codigo={error_code}"
         )
         # Return empty list on error (graceful degradation)
         return []
     except Exception as e:
-        logger.exception(f"erro_busca_semantica: query={query}, erro={str(e)}")
+        logger.exception(f"Erro na busca semântica: query={query}, erro={str(e)}")
         return []
 
 
@@ -222,7 +222,7 @@ async def text_search(
         ]
 
         logger.info(
-            f"busca_textual_concluida: query={query}, resultados={len(search_results)}, match_count={match_count}"
+            f"Busca textual concluída: query={query}, resultados={len(search_results)}, match_count={match_count}"
         )
 
         return search_results
@@ -230,12 +230,12 @@ async def text_search(
     except OperationFailure as e:
         error_code = e.code if hasattr(e, 'code') else None
         logger.error(
-            f"busca_textual_falhou: query={query}, erro={str(e)}, codigo={error_code}"
+            f"Busca textual falhou: query={query}, erro={str(e)}, codigo={error_code}"
         )
         # Return empty list on error (graceful degradation)
         return []
     except Exception as e:
-        logger.exception(f"erro_busca_textual: query={query}, erro={str(e)}")
+        logger.exception(f"Erro na busca textual: query={query}, erro={str(e)}")
         return []
 
 
@@ -353,7 +353,7 @@ async def hybrid_search(
         # Over-fetch for better RRF results (2x requested count)
         fetch_count = match_count * 2
 
-        logger.info(f"busca_hibrida_iniciando: query='{query}', match_count={match_count}")
+        logger.info(f"Busca híbrida iniciando: query='{query}', match_count={match_count}")
 
         # Run both searches concurrently for performance
         semantic_results, text_results = await asyncio.gather(
@@ -385,7 +385,7 @@ async def hybrid_search(
         final_results = merged_results[:match_count]
 
         logger.info(
-            f"busca_hibrida_concluida: query='{query}', "
+            f"Busca híbrida concluída: query='{query}', "
             f"semantica={len(semantic_results)}, textual={len(text_results)}, "
             f"mesclados={len(merged_results)}, retornados={len(final_results)}"
         )
@@ -393,7 +393,7 @@ async def hybrid_search(
         return final_results
 
     except Exception as e:
-        logger.exception(f"erro_busca_hibrida: query={query}, erro={str(e)}")
+        logger.exception(f"Erro na busca híbrida: query={query}, erro={str(e)}")
         # Graceful degradation: try semantic-only as last resort
         try:
             logger.info("Usando apenas busca semântica como fallback")
