@@ -72,6 +72,12 @@ class Settings(BaseSettings):
         default=0.3, description="Default text weight for hybrid search (0-1)"
     )
 
+    # Custo LLM (exibição em BRL)
+    usd_to_brl_rate: float = Field(
+        default=5.5,
+        description="Taxa USD/BRL para exibir custo estimado em reais (LLM_COST_USD_BRL)",
+    )
+
 
 def validate_environment_variables() -> tuple[bool, list[str]]:
     """

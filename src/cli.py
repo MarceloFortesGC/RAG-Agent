@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 # Import our agent and dependencies
 from src.agent import rag_agent, RAGState
 from src.settings import load_settings, validate_environment_variables
+from src.llm_cost import format_usage_and_cost
 
 # Load environment variables
 load_dotenv(override=True)
@@ -155,6 +156,21 @@ async def _stream_agent(
     # Get final output
     final_output = run.result.output if hasattr(run.result, 'output') else str(run.result)
     response = response_text.strip() or final_output
+
+    # Exibir uso de tokens e custo estimado ao final da resposta
+    try:
+        usage = run.result.usage()
+        settings = load_settings()
+        usage_line = format_usage_and_cost(
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.total_tokens,
+            settings.llm_model,
+            usd_to_brl=settings.usd_to_brl_rate,
+        )
+        console.print(f"  [dim]{usage_line}[/dim]")
+    except Exception:
+        pass
 
     # Return both streamed text and new messages
     return (response, new_messages)
