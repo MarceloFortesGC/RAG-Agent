@@ -1,27 +1,27 @@
 """
-Main ingestion script for processing documents into MongoDB vector database.
+Main ingestion script for processing documents into the RAG vector store (Chroma).
 
-This adapts the examples/ingestion/ingest.py pipeline to use MongoDB instead of PostgreSQL,
-changing only the database layer while preserving all document processing logic.
+Preserves document processing logic (Docling, chunking, embeddings); persistence
+is handled by Chroma (see pipeline implementation).
 """
 
 import os
 import asyncio
 import logging
 import glob
+import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import argparse
 from dataclasses import dataclass
 
-from pymongo import AsyncMongoClient
-from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
-from bson import ObjectId
+import chromadb
 from dotenv import load_dotenv
 
 from src.ingestion.chunker import ChunkingConfig, create_chunker, DocumentChunk
 from src.ingestion.embedder import create_embedder
+from src.projects import resolve_project, PROJECTS
 from src.settings import load_settings
 
 # Load environment variables
@@ -50,7 +50,7 @@ class IngestionResult:
 
 
 class DocumentIngestionPipeline:
-    """Pipeline for ingesting documents into MongoDB vector database."""
+    """Pipeline for ingesting documents into the RAG vector store (Chroma)."""
 
     def __init__(
         self,
@@ -63,7 +63,7 @@ class DocumentIngestionPipeline:
 
         Args:
             config: Ingestion configuration
-            documents_folder: Folder containing documents
+            documents_folder: Folder containing documents (subfolders = project keys)
             clean_before_ingest: Whether to clean existing data before ingestion
         """
         self.config = config
@@ -72,10 +72,6 @@ class DocumentIngestionPipeline:
 
         # Load settings
         self.settings = load_settings()
-
-        # Initialize MongoDB client and database references
-        self.mongo_client: Optional[AsyncMongoClient] = None
-        self.db: Optional[Any] = None
 
         # Initialize components
         self.chunker_config = ChunkingConfig(
@@ -88,50 +84,94 @@ class DocumentIngestionPipeline:
         self.chunker = create_chunker(self.chunker_config)
         self.embedder = create_embedder()
 
+        self.chroma_client: Optional[Any] = None
+        self.chroma_collection: Optional[Any] = None
         self._initialized = False
 
     async def initialize(self) -> None:
-        """
-        Initialize MongoDB connections.
-
-        Raises:
-            ConnectionFailure: If MongoDB connection fails
-            ServerSelectionTimeoutError: If MongoDB server selection times out
-        """
+        """Initialize pipeline and Chroma client/collection."""
         if self._initialized:
             return
-
         logger.info("Inicializando pipeline de ingestão...")
-
-        try:
-            # Initialize MongoDB client
-            self.mongo_client = AsyncMongoClient(
-                self.settings.mongodb_uri,
-                serverSelectionTimeoutMS=5000
-            )
-            self.db = self.mongo_client[self.settings.mongodb_database]
-
-            # Verify connection
-            await self.mongo_client.admin.command("ping")
-            logger.info(
-                f"Conectado ao banco de dados MongoDB: {self.settings.mongodb_database}"
-            )
-
-        except (ConnectionFailure, ServerSelectionTimeoutError) as e:
-            logger.exception(f"Falha na conexão MongoDB: erro={str(e)}")
-            raise
-
+        self.chroma_client = chromadb.PersistentClient(path=self.settings.chroma_path)
+        self.chroma_collection = self.chroma_client.get_or_create_collection(
+            name="rag_chunks",
+            metadata={"description": "Chunks de todos os projetos"},
+        )
         self._initialized = True
         logger.info("Pipeline de ingestão inicializado")
 
     async def close(self) -> None:
-        """Close MongoDB connections."""
-        if self._initialized and self.mongo_client:
-            await self.mongo_client.close()
-            self.mongo_client = None
-            self.db = None
+        """Close pipeline resources."""
+        if self._initialized:
+            self.chroma_client = None
+            self.chroma_collection = None
             self._initialized = False
-            logger.info("Conexão MongoDB fechada")
+            logger.info("Pipeline fechado")
+
+    async def _clean_chroma_collection(self) -> None:
+        """Clear all chunks from Chroma (drop and recreate collection)."""
+        if not self.chroma_collection:
+            return
+        logger.warning("Limpando collection Chroma rag_chunks...")
+        self.chroma_client.delete_collection("rag_chunks")
+        self.chroma_collection = self.chroma_client.get_or_create_collection(
+            name="rag_chunks",
+            metadata={"description": "Chunks de todos os projetos"},
+        )
+        logger.info("Collection rag_chunks limpa e recriada")
+
+    def _document_slug(self, source_path: str) -> str:
+        """Slug from document path (e.g. termos_de_uso from master_detox/termos_de_uso.pdf)."""
+        name = Path(source_path).stem
+        return re.sub(r"[^a-zA-Z0-9_-]", "_", name)
+
+    async def _save_to_chroma(
+        self,
+        project_id: str,
+        project_name: str,
+        document_title: str,
+        document_path: str,
+        embedded_chunks: List[DocumentChunk],
+    ) -> None:
+        """
+        Save chunks to Chroma with deterministic ids and metadata.
+
+        Chroma API: documents (text), embeddings, metadatas. Batch size 100.
+        """
+        if not embedded_chunks or not self.chroma_collection:
+            return
+        doc_slug = self._document_slug(document_path)
+        batch_size = 100
+        for i in range(0, len(embedded_chunks), batch_size):
+            batch = embedded_chunks[i : i + batch_size]
+            ids = [
+                f"{project_id}:{doc_slug}:{chunk.index}"
+                for chunk in batch
+            ]
+            documents = [chunk.content for chunk in batch]
+            embeddings = [chunk.embedding for chunk in batch if chunk.embedding is not None]
+            if len(embeddings) != len(batch):
+                continue
+            metadatas = [
+                {
+                    "project_id": project_id,
+                    "project_name": project_name,
+                    "document_title": document_title,
+                    "document_path": document_path,
+                    "chunk_index": chunk.index,
+                    "token_count": chunk.token_count or 0,
+                }
+                for chunk in batch
+            ]
+            await asyncio.to_thread(
+                self.chroma_collection.add,
+                ids=ids,
+                documents=documents,
+                embeddings=embeddings,
+                metadatas=metadatas,
+            )
+        logger.info(f"Inseridos {len(embedded_chunks)} chunks no Chroma")
 
     def _find_document_files(self) -> List[str]:
         """
@@ -164,7 +204,15 @@ class DocumentIngestionPipeline:
                 )
             )
 
-        return sorted(files)
+        # Only include files under a project subfolder (first segment = project_key in projects.json)
+        def under_project(path: str) -> bool:
+            rel = os.path.relpath(path, self.documents_folder)
+            parts = Path(rel).parts
+            if len(parts) < 2:
+                return False
+            return parts[0] in PROJECTS
+
+        return sorted(f for f in files if under_project(f))
 
     def _read_document(self, file_path: str) -> tuple[str, Optional[Any]]:
         """
@@ -365,92 +413,9 @@ class DocumentIngestionPipeline:
 
         return metadata
 
-    async def _save_to_mongodb(
-        self,
-        title: str,
-        source: str,
-        content: str,
-        chunks: List[DocumentChunk],
-        metadata: Dict[str, Any]
-    ) -> str:
-        """
-        Save document and chunks to MongoDB.
-
-        Args:
-            title: Document title
-            source: Document source path
-            content: Document content
-            chunks: List of document chunks with embeddings
-            metadata: Document metadata
-
-        Returns:
-            Document ID (ObjectId as string)
-
-        Raises:
-            Exception: If MongoDB operations fail
-        """
-        # Get collection references
-        documents_collection = self.db[
-            self.settings.mongodb_collection_documents
-        ]
-        chunks_collection = self.db[self.settings.mongodb_collection_chunks]
-
-        # Insert document
-        document_dict = {
-            "title": title,
-            "source": source,
-            "content": content,
-            "metadata": metadata,
-            "created_at": datetime.now()
-        }
-
-        document_result = await documents_collection.insert_one(document_dict)
-        document_id = document_result.inserted_id
-
-        logger.info(f"Documento inserido com ID: {document_id}")
-
-        # Insert chunks with embeddings as Python lists
-        chunk_dicts = []
-        for chunk in chunks:
-            chunk_dict = {
-                "document_id": document_id,
-                "content": chunk.content,
-                "embedding": chunk.embedding,  # Python list, NOT string!
-                "chunk_index": chunk.index,
-                "metadata": chunk.metadata,
-                "token_count": chunk.token_count,
-                "created_at": datetime.now()
-            }
-            chunk_dicts.append(chunk_dict)
-
-        # Batch insert with ordered=False for partial success
-        if chunk_dicts:
-            await chunks_collection.insert_many(chunk_dicts, ordered=False)
-            logger.info(f"Inseridos {len(chunk_dicts)} chunks")
-
-        return str(document_id)
-
-    async def _clean_databases(self) -> None:
-        """Clean existing data from MongoDB collections."""
-        logger.warning("Limpando dados existentes do MongoDB...")
-
-        # Get collection references
-        documents_collection = self.db[
-            self.settings.mongodb_collection_documents
-        ]
-        chunks_collection = self.db[self.settings.mongodb_collection_chunks]
-
-        # Delete all chunks first (to respect FK relationships)
-        chunks_result = await chunks_collection.delete_many({})
-        logger.info(f"Deletados {chunks_result.deleted_count} chunks")
-
-        # Delete all documents
-        docs_result = await documents_collection.delete_many({})
-        logger.info(f"Deletados {docs_result.deleted_count} documentos")
-
     async def _ingest_single_document(self, file_path: str) -> IngestionResult:
         """
-        Ingest a single document.
+        Ingest a single document. Project must be resolved before embedding.
 
         Args:
             file_path: Path to the document file
@@ -460,10 +425,16 @@ class DocumentIngestionPipeline:
         """
         start_time = datetime.now()
 
+        # Resolve project from path (first segment of path relative to documents_folder)
+        document_source = os.path.relpath(file_path, self.documents_folder)
+        project_key = Path(document_source).parts[0]
+        project = resolve_project(project_key)
+        project_id = project["project_id"]
+        project_name = project["name"]
+
         # Read document (returns tuple: content, docling_doc)
         document_content, docling_doc = self._read_document(file_path)
         document_title = self._extract_title(document_content, file_path)
-        document_source = os.path.relpath(file_path, self.documents_folder)
 
         # Extract metadata from content
         document_metadata = self._extract_document_metadata(
@@ -471,7 +442,7 @@ class DocumentIngestionPipeline:
             file_path
         )
 
-        logger.info(f"Processando documento: {document_title}")
+        logger.info(f"Processando documento: {document_title} (projeto={project_id})")
 
         # Chunk the document - pass DoclingDocument for HybridChunker
         chunks = await self.chunker.chunk_document(
@@ -500,24 +471,21 @@ class DocumentIngestionPipeline:
         embedded_chunks = await self.embedder.embed_chunks(chunks)
         logger.info(f"Embeddings gerados para {len(embedded_chunks)} chunks")
 
-        # Save to MongoDB
-        document_id = await self._save_to_mongodb(
-            document_title,
-            document_source,
-            document_content,
-            embedded_chunks,
-            document_metadata
+        # Save to Chroma (deterministic ids: project_id:doc_slug:chunk_index)
+        await self._save_to_chroma(
+            project_id=project_id,
+            project_name=project_name,
+            document_title=document_title,
+            document_path=document_source,
+            embedded_chunks=embedded_chunks,
         )
 
-        logger.info(f"Documento salvo no MongoDB com ID: {document_id}")
-
-        # Calculate processing time
         processing_time = (
             datetime.now() - start_time
         ).total_seconds() * 1000
 
         return IngestionResult(
-            document_id=document_id,
+            document_id=f"{project_id}:{self._document_slug(document_source)}",
             title=document_title,
             chunks_created=len(chunks),
             processing_time_ms=processing_time,
@@ -540,9 +508,8 @@ class DocumentIngestionPipeline:
         if not self._initialized:
             await self.initialize()
 
-        # Clean existing data if requested
         if self.clean_before_ingest:
-            await self._clean_databases()
+            await self._clean_chroma_collection()
 
         # Find all supported document files
         document_files = self._find_document_files()
@@ -594,7 +561,7 @@ class DocumentIngestionPipeline:
 async def main() -> None:
     """Main function for running ingestion."""
     parser = argparse.ArgumentParser(
-        description="Ingest documents into MongoDB vector database"
+        description="Ingest documents into RAG vector store (Chroma)"
     )
     parser.add_argument(
         "--documents", "-d",
@@ -688,18 +655,7 @@ async def main() -> None:
         print("\n" + "="*50)
         print("PRÓXIMOS PASSOS")
         print("="*50)
-        print("1. Criar índice de busca vetorial na UI do Atlas:")
-        print("   - Nome do índice: vector_index")
-        print("   - Coleção: chunks")
-        print("   - Campo: embedding")
-        print("   - Dimensões: 1536 (para text-embedding-3-small)")
-        print()
-        print("2. Criar índice de busca textual na UI do Atlas:")
-        print("   - Nome do índice: text_index")
-        print("   - Coleção: chunks")
-        print("   - Campo: content")
-        print()
-        print("Veja .claude/reference/mongodb-patterns.md para instruções detalhadas")
+        print("Chunks foram processados. Execute o CLI para consultar a base.")
 
     except KeyboardInterrupt:
         print("\nIngestão interrompida pelo usuário")

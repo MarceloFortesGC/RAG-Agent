@@ -1,45 +1,44 @@
-# MongoDB RAG Agent Development Instructions
+# RAG Agent Development Instructions (Chroma + Projects)
 
 ## Project Overview
 
-Agentic RAG system combining MongoDB Atlas Vector Search with Pydantic AI for intelligent document retrieval. Uses Docling for multi-format ingestion, Motor for async MongoDB operations, and hybrid search via `$rankFusion`. Built with UV, type-safe Pydantic models, and conversational CLI.
+Agentic RAG system with Chroma as vector store and projects defined in `projects.json`. Uses Docling for multi-format ingestion, Pydantic AI for the agent, and semantic search always filtered by `project_id` (multi-project via tag). Built with UV and type-safe Pydantic models.
 
 ## Core Principles
 
 1. **TYPE SAFETY IS NON-NEGOTIABLE**
    - All functions, methods, and variables MUST have type annotations
-   - Use Pydantic models for all data structures (documents, chunks, search results)
+   - Use Pydantic models for all data structures (chunks, search results)
    - No `Any` types without explicit justification
 
 2. **KISS** (Keep It Simple, Stupid)
    - Prefer simple, readable solutions over clever abstractions
    - Don't build fallback mechanisms unless absolutely necessary
-   - Trust MongoDB `$rankFusion` - no manual score combination
+   - One Chroma collection `rag_chunks` for all projects
 
 3. **YAGNI** (You Aren't Gonna Need It)
    - Don't build features until they're actually needed
    - MVP first, enhancements later
 
 4. **ASYNC ALL THE WAY**
-   - All I/O operations MUST be async (MongoDB, embeddings, LLM calls)
-   - Use `asyncio` for concurrent operations
+   - All I/O operations MUST be async (embeddings, LLM calls); Chroma calls via `asyncio.to_thread`
    - Proper cleanup with `try/finally` or context managers
 
 **Architecture:**
 
 ```
-examples/
-├── agent.py           # Pydantic AI agent with StateDeps
+src/
+├── agent.py           # Pydantic AI agent (search by project_id or tag)
 ├── cli.py             # Rich-based conversational CLI
-├── dependencies.py    # MongoDB client, OpenAI client injection
-├── providers.py       # LLM/embedding provider configs
-├── settings.py        # Pydantic Settings (env variables)
-├── tools.py           # Search tools (semantic, hybrid)
+├── dependencies.py    # Chroma client + collection, OpenAI embeddings
+├── projects.json      # Project definitions (not in Chroma)
+├── projects.py        # resolve_project, get_projects_by_tag
+├── tools.py           # semantic_search (where project_id), multi_project_search
 ├── prompts.py         # System prompts
 └── ingestion/
     ├── chunker.py     # Docling HybridChunker wrapper
     ├── embedder.py    # Batch embedding generation
-    └── ingest.py      # Multi-format document pipeline
+    └── ingest.py      # Pipeline: resolve_project → chunk → embed → Chroma add
 ```
 
 ---
@@ -66,7 +65,6 @@ async def semantic_search(
         List of search results ordered by similarity
 
     Raises:
-        ConnectionFailure: If MongoDB connection fails
         ValueError: If match_count exceeds maximum allowed
     """
 ```
@@ -93,15 +91,16 @@ uv pip install -e .
 
 **Run ingestion:**
 ```bash
-uv run python -m examples.ingestion.ingest -d ./documents
+# Documents must be under documents/<project_key>/ (project_key from projects.json)
+uv run python -m src.ingestion.ingest -d ./documents
 
 # With options
-uv run python -m examples.ingestion.ingest -d ./documents --chunk-size 1000 --no-clean
+uv run python -m src.ingestion.ingest -d ./documents --chunk-size 1000 --no-clean
 ```
 
 **Run CLI agent:**
 ```bash
-uv run python -m examples.cli
+uv run python -m src.cli
 ```
 
 **Common CLI commands:**
@@ -117,13 +116,8 @@ uv run python -m examples.cli
 
 **ALL configuration in .env file:**
 ```bash
-# MongoDB
-MONGODB_URI=mongodb+srv://user:pass@cluster.mongodb.net/
-MONGODB_DATABASE=rag_db
-MONGODB_COLLECTION_DOCUMENTS=documents
-MONGODB_COLLECTION_CHUNKS=chunks
-MONGODB_VECTOR_INDEX=vector_index
-MONGODB_TEXT_INDEX=text_index
+# Chroma (vector store)
+CHROMA_PATH=./chroma_data
 
 # LLM Provider
 LLM_PROVIDER=openrouter
@@ -154,8 +148,7 @@ class Settings(BaseSettings):
         case_sensitive=False
     )
 
-    mongodb_uri: str = Field(..., description="MongoDB connection string")
-    mongodb_database: str = Field(default="rag_db")
+    chroma_path: str = Field(default="./chroma_data", description="Chroma persistent path")
     llm_api_key: str = Field(..., description="LLM provider API key")
     embedding_model: str = Field(default="text-embedding-3-small")
 ```
@@ -174,22 +167,17 @@ except SpecificError as e:
     raise
 ```
 
-### MongoDB Operations
+### Chroma Operations
 
 ```python
-from pymongo.errors import ConnectionFailure, OperationFailure
-
-try:
-    results = await collection.aggregate(pipeline).to_list(length=limit)
-except ConnectionFailure:
-    logger.exception("mongodb_connection_failed")
-    raise
-except OperationFailure as e:
-    if e.code == 291:  # Index not found
-        logger.error("mongodb_index_missing", index="vector_index")
-        raise ValueError("Vector search index not configured in Atlas")
-    logger.exception("mongodb_operation_failed", code=e.code)
-    raise
+# Chroma API is sync; run in thread to avoid blocking event loop
+result = await asyncio.to_thread(
+    collection.query,
+    query_embeddings=[embedding],
+    n_results=10,
+    where={"project_id": project_id},
+    include=["documents", "metadatas", "distances"],
+)
 ```
 
 ### API Calls (Embeddings, LLM)
@@ -263,23 +251,15 @@ async def test_chunker_creates_valid_chunks():
 
 ```python
 @pytest.mark.integration
-async def test_mongodb_vector_search(mongo_client):
-    """Test vector search against live MongoDB."""
-    # Insert test data
-    await mongo_client.chunks.insert_one({
-        "content": "Test content",
-        "embedding": [0.1] * 1536,
-        "document_id": ObjectId()
-    })
-
-    # Perform search
+async def test_chroma_semantic_search(deps):
+    """Test semantic search against Chroma (always with where project_id)."""
     results = await semantic_search(
         ctx=test_context,
         query="test",
-        match_count=5
+        project_id="master_detox",
+        match_count=5,
     )
-
-    assert len(results) > 0
+    assert all(r.metadata.get("project_id") == "master_detox" for r in results)
 ```
 
 **Run tests:**
@@ -295,23 +275,28 @@ uv run pytest tests/ -m integration
 
 ## Common Pitfalls
 
-### 1. Embedding Format Confusion
+### 1. Query without where
 ```python
-# ❌ WRONG - String formatting is for Postgres pgvector
-embedding_str = '[' + ','.join(map(str, embedding)) + ']'
+# ❌ WRONG - Never query Chroma without project filter by default
+result = collection.query(query_embeddings=[emb], n_results=10)
 
-# ✅ CORRECT - Python list for MongoDB
-embedding = [0.1, 0.2, 0.3, ...]
-await collection.insert_one({"embedding": embedding})
+# ✅ CORRECT - Always filter by project_id
+result = collection.query(
+    query_embeddings=[emb],
+    n_results=10,
+    where={"project_id": project_id},
+)
 ```
 
-### 2. Async/Await Mistakes
+### 2. Project resolution after embedding
 ```python
-# ❌ WRONG - Forgot await
-result = collection.find_one({"_id": doc_id})
+# ❌ WRONG - Resolve project after generating embeddings
+chunks = embed_chunks(chunks)
+project = resolve_project(project_key)
 
-# ✅ CORRECT
-result = await collection.find_one({"_id": doc_id})
+# ✅ CORRECT - Resolve project before embedding (required for ids and metadata)
+project = resolve_project(project_key)
+# ... then chunk and embed
 ```
 
 ### 3. Missing DoclingDocument for HybridChunker
@@ -324,50 +309,60 @@ result = converter.convert(file_path)
 chunks = chunker.chunk(dl_doc=result.document)
 ```
 
-### 4. Creating Vector Indexes Programmatically
+### 4. Chroma sync API blocking event loop
 ```python
-# ❌ WRONG - Cannot create vector/search indexes via Motor
-await collection.create_index([("embedding", "vector")])
+# ❌ WRONG - Chroma is sync; calling directly blocks
+collection.add(ids=ids, documents=docs, embeddings=embs, metadatas=metas)
 
-# ✅ CORRECT - Must create in Atlas UI or via Atlas API
-# See .claude/reference/mongodb-patterns.md for index setup
+# ✅ CORRECT - Run in thread
+await asyncio.to_thread(
+    collection.add,
+    ids=ids,
+    documents=docs,
+    embeddings=embs,
+    metadatas=metas,
+)
 ```
 
-### 5. Missing $lookup for Document Metadata
+### 5. Query without where (project_id)
 ```python
-# ❌ WRONG - Search without document metadata
-pipeline = [{"$vectorSearch": {...}}]
+# ❌ WRONG - Never query without project filter by default
+result = collection.query(query_embeddings=[emb], n_results=10)
 
-# ✅ CORRECT - Join with documents collection
-pipeline = [
-    {"$vectorSearch": {...}},
-    {"$lookup": {
-        "from": "documents",
-        "localField": "document_id",
-        "foreignField": "_id",
-        "as": "document_info"
-    }},
-    {"$unwind": "$document_info"}
-]
+# ✅ CORRECT - Always filter by project_id
+result = collection.query(
+    query_embeddings=[emb],
+    n_results=10,
+    where={"project_id": project_id},
+)
 ```
 
 ---
 
 ## Quick Reference
 
-**MongoDB Operations:**
+**Chroma Operations:**
 ```python
-# Insert document
-doc_id = await db.documents.insert_one(doc_dict).inserted_id
+# One collection for all projects
+collection = client.get_or_create_collection("rag_chunks", metadata={...})
 
-# Insert many chunks
-await db.chunks.insert_many(chunk_dicts)
+# Add chunks (deterministic id: project_id:doc_slug:chunk_index)
+await asyncio.to_thread(
+    collection.add,
+    ids=ids,
+    documents=texts,
+    embeddings=embeddings,
+    metadatas=[{"project_id": pid, "project_name": name, "document_title": title, ...}],
+)
 
-# Vector search with aggregation
-results = await db.chunks.aggregate(pipeline).to_list(length=limit)
-
-# Find by ID
-doc = await db.documents.find_one({"_id": ObjectId(doc_id)})
+# Query (always with where project_id)
+result = await asyncio.to_thread(
+    collection.query,
+    query_embeddings=[query_embedding],
+    n_results=10,
+    where={"project_id": project_id},
+    include=["documents", "metadatas", "distances"],
+)
 ```
 
 **Embedding Generation:**
@@ -414,11 +409,6 @@ async with agent.iter(input, deps=deps, message_history=history) as run:
 
 For detailed implementation patterns, see:
 
-- **MongoDB patterns**: `.claude/reference/mongodb-patterns.md`
-  - Collection design (two-collection pattern)
-  - Aggregation pipelines ($vectorSearch, $rankFusion)
-  - Connection management, index setup
-
 - **Docling ingestion**: `.claude/reference/docling-ingestion.md`
   - Document conversion for all formats
   - HybridChunker usage and configuration
@@ -429,4 +419,4 @@ For detailed implementation patterns, see:
   - Tool definitions and best practices
   - Streaming implementation details
 
-These references are loaded on-demand when working on specific features.
+Chroma: one collection `rag_chunks`; project_id resolved before embedding; IDs deterministic; query always with `where`.

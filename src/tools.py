@@ -1,402 +1,270 @@
-"""Search tools for MongoDB RAG Agent."""
+"""Search tools for RAG Agent (Chroma)."""
 
 import asyncio
 import logging
 from typing import Optional, List, Dict, Any
 from pydantic_ai import RunContext
 from pydantic import BaseModel, Field
-from pymongo.errors import OperationFailure
 
 from src.dependencies import AgentDependencies
+from src.projects import get_projects_by_tag
 
 logger = logging.getLogger(__name__)
 
 
 class SearchResult(BaseModel):
-    """Model for search results."""
+    """Model for search results (Chroma: chunk_id, content from documents, metadata)."""
 
-    chunk_id: str = Field(..., description="MongoDB ObjectId of chunk as string")
-    document_id: str = Field(..., description="Parent document ObjectId as string")
+    chunk_id: str = Field(..., description="Chunk ID (project_id:doc_slug:index)")
+    document_id: str = Field(default="", description="Legacy; use chunk_id")
     content: str = Field(..., description="Chunk text content")
     similarity: float = Field(..., description="Relevance score (0-1)")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Chunk metadata")
-    document_title: str = Field(..., description="Title from document lookup")
-    document_source: str = Field(..., description="Source from document lookup")
+    document_title: str = Field(..., description="Document title from metadata")
+    document_source: str = Field(..., description="Document path/source from metadata")
 
 
 async def semantic_search(
     ctx: RunContext[AgentDependencies],
     query: str,
-    match_count: Optional[int] = None
+    project_id: str,
+    match_count: Optional[int] = None,
 ) -> List[SearchResult]:
     """
-    Perform pure semantic search using MongoDB vector similarity.
+    Semantic search in Chroma filtered by project_id (always with where).
 
     Args:
         ctx: Agent runtime context with dependencies
         query: Search query text
+        project_id: Project ID to filter (required)
         match_count: Number of results to return (default: 10)
 
     Returns:
         List of search results ordered by similarity
-
-    Raises:
-        OperationFailure: If MongoDB operation fails (e.g., missing index)
     """
     try:
         deps = ctx.deps
+        if not deps.chroma_collection:
+            await deps.initialize()
 
-        # Use default if not specified
         if match_count is None:
             match_count = deps.settings.default_match_count
-
-        # Validate match count
         match_count = min(match_count, deps.settings.max_match_count)
 
-        # Generate embedding for query (already returns list[float])
         query_embedding = await deps.get_embedding(query)
 
-        # Build MongoDB aggregation pipeline
-        pipeline = [
-            {
-                "$vectorSearch": {
-                    "index": deps.settings.mongodb_vector_index,
-                    "queryVector": query_embedding,
-                    "path": "embedding",
-                    "numCandidates": 100,  # Search space (10x limit is good default)
-                    "limit": match_count
-                }
-            },
-            {
-                "$lookup": {
-                    "from": deps.settings.mongodb_collection_documents,
-                    "localField": "document_id",
-                    "foreignField": "_id",
-                    "as": "document_info"
-                }
-            },
-            {
-                "$unwind": "$document_info"
-            },
-            {
-                "$project": {
-                    "chunk_id": "$_id",
-                    "document_id": 1,
-                    "content": 1,
-                    "similarity": {"$meta": "vectorSearchScore"},
-                    "metadata": 1,
-                    "document_title": "$document_info.title",
-                    "document_source": "$document_info.source"
-                }
-            }
-        ]
+        result = await asyncio.to_thread(
+            deps.chroma_collection.query,
+            query_embeddings=[query_embedding],
+            n_results=match_count,
+            where={"project_id": project_id},
+            include=["documents", "metadatas", "distances"],
+        )
 
-        # Execute aggregation
-        collection = deps.db[deps.settings.mongodb_collection_chunks]
-        cursor = await collection.aggregate(pipeline)
-        results = [doc async for doc in cursor][:match_count]
+        ids_list = result.get("ids", [[]])
+        docs_list = result.get("documents", [[]])
+        metas_list = result.get("metadatas", [[]])
+        dists_list = result.get("distances", [[]])
 
-        # Convert to SearchResult objects (ObjectId → str conversion)
-        search_results = [
-            SearchResult(
-                chunk_id=str(doc['chunk_id']),
-                document_id=str(doc['document_id']),
-                content=doc['content'],
-                similarity=doc['similarity'],
-                metadata=doc.get('metadata', {}),
-                document_title=doc['document_title'],
-                document_source=doc['document_source']
+        ids = ids_list[0] if ids_list else []
+        docs = docs_list[0] if docs_list else []
+        metas = metas_list[0] if metas_list else []
+        dists = dists_list[0] if dists_list else []
+
+        # Chroma returns distances (L2: lower = more similar). Map to similarity in (0, 1].
+        def dist_to_similarity(d: float) -> float:
+            if d is None:
+                return 0.0
+            return 1.0 / (1.0 + d)
+
+        search_results = []
+        for i, chunk_id in enumerate(ids):
+            meta = metas[i] if i < len(metas) else {}
+            content = docs[i] if i < len(docs) else ""
+            dist = dists[i] if i < len(dists) else 0.0
+            search_results.append(
+                SearchResult(
+                    chunk_id=str(chunk_id),
+                    document_id="",
+                    content=content,
+                    similarity=dist_to_similarity(dist),
+                    metadata=meta,
+                    document_title=meta.get("document_title", ""),
+                    document_source=meta.get("document_path", ""),
+                )
             )
-            for doc in results
-        ]
 
         logger.info(
-            f"Busca semântica concluída: query={query}, resultados={len(search_results)}, match_count={match_count}"
+            f"Busca semântica: query={query}, project_id={project_id}, resultados={len(search_results)}"
         )
-
         return search_results
 
-    except OperationFailure as e:
-        error_code = e.code if hasattr(e, 'code') else None
-        logger.error(
-            f"Busca semântica falhou: query={query}, erro={str(e)}, codigo={error_code}"
-        )
-        # Return empty list on error (graceful degradation)
-        return []
     except Exception as e:
-        logger.exception(f"Erro na busca semântica: query={query}, erro={str(e)}")
+        logger.exception(f"Busca semântica falhou: query={query}, erro={str(e)}")
         return []
 
 
 async def text_search(
     ctx: RunContext[AgentDependencies],
     query: str,
-    match_count: Optional[int] = None
+    project_id: str,
+    match_count: Optional[int] = None,
 ) -> List[SearchResult]:
     """
-    Perform full-text search using MongoDB Atlas Search.
-
-    Uses $search operator for keyword matching, fuzzy matching, and phrase matching.
-    Works on all Atlas tiers including M0 (free tier).
+    Full-text search (not implemented with Chroma; returns empty).
 
     Args:
-        ctx: Agent runtime context with dependencies
+        ctx: Agent runtime context
         query: Search query text
-        match_count: Number of results to return (default: 10)
+        project_id: Project ID to filter
+        match_count: Number of results
 
     Returns:
-        List of search results ordered by text relevance
-
-    Raises:
-        OperationFailure: If MongoDB operation fails (e.g., missing index)
+        Empty list (Chroma semantic-only)
     """
-    try:
-        deps = ctx.deps
-
-        # Use default if not specified
-        if match_count is None:
-            match_count = deps.settings.default_match_count
-
-        # Validate match count
-        match_count = min(match_count, deps.settings.max_match_count)
-
-        # Build MongoDB Atlas Search aggregation pipeline
-        pipeline = [
-            {
-                "$search": {
-                    "index": deps.settings.mongodb_text_index,
-                    "text": {
-                        "query": query,
-                        "path": "content",
-                        "fuzzy": {
-                            "maxEdits": 2,
-                            "prefixLength": 3
-                        }
-                    }
-                }
-            },
-            {
-                "$limit": match_count * 2  # Over-fetch for better RRF results
-            },
-            {
-                "$lookup": {
-                    "from": deps.settings.mongodb_collection_documents,
-                    "localField": "document_id",
-                    "foreignField": "_id",
-                    "as": "document_info"
-                }
-            },
-            {
-                "$unwind": "$document_info"
-            },
-            {
-                "$project": {
-                    "chunk_id": "$_id",
-                    "document_id": 1,
-                    "content": 1,
-                    "similarity": {"$meta": "searchScore"},  # Text relevance score
-                    "metadata": 1,
-                    "document_title": "$document_info.title",
-                    "document_source": "$document_info.source"
-                }
-            }
-        ]
-
-        # Execute aggregation
-        collection = deps.db[deps.settings.mongodb_collection_chunks]
-        cursor = await collection.aggregate(pipeline)
-        results = [doc async for doc in cursor][:match_count * 2]
-
-        # Convert to SearchResult objects (ObjectId → str conversion)
-        search_results = [
-            SearchResult(
-                chunk_id=str(doc['chunk_id']),
-                document_id=str(doc['document_id']),
-                content=doc['content'],
-                similarity=doc['similarity'],
-                metadata=doc.get('metadata', {}),
-                document_title=doc['document_title'],
-                document_source=doc['document_source']
-            )
-            for doc in results
-        ]
-
-        logger.info(
-            f"Busca textual concluída: query={query}, resultados={len(search_results)}, match_count={match_count}"
-        )
-
-        return search_results
-
-    except OperationFailure as e:
-        error_code = e.code if hasattr(e, 'code') else None
-        logger.error(
-            f"Busca textual falhou: query={query}, erro={str(e)}, codigo={error_code}"
-        )
-        # Return empty list on error (graceful degradation)
-        return []
-    except Exception as e:
-        logger.exception(f"Erro na busca textual: query={query}, erro={str(e)}")
-        return []
+    return []
 
 
 def reciprocal_rank_fusion(
     search_results_list: List[List[SearchResult]],
-    k: int = 60
+    k: int = 60,
 ) -> List[SearchResult]:
     """
     Merge multiple ranked lists using Reciprocal Rank Fusion.
 
-    RRF is a simple yet effective algorithm for combining results from different
-    search methods. It works by scoring each document based on its rank position
-    in each result list.
-
     Args:
-        search_results_list: List of ranked result lists from different searches
-        k: RRF constant (default: 60, standard in literature)
+        search_results_list: List of ranked result lists
+        k: RRF constant (default: 60)
 
     Returns:
-        Unified list of results sorted by combined RRF score
-
-    Algorithm:
-        For each document d appearing in result lists:
-            RRF_score(d) = Σ(1 / (k + rank_i(d)))
-        Where rank_i(d) is the position of document d in result list i.
-
-    References:
-        - Cormack et al. (2009): "Reciprocal Rank Fusion outperforms the best system"
-        - Standard k=60 performs well across various datasets
+        Unified list sorted by combined RRF score
     """
-    # Build score dictionary by chunk_id
     rrf_scores: Dict[str, float] = {}
     chunk_map: Dict[str, SearchResult] = {}
 
-    # Process each search result list
     for results in search_results_list:
         for rank, result in enumerate(results):
             chunk_id = result.chunk_id
-
-            # Calculate RRF contribution: 1 / (k + rank)
             rrf_score = 1.0 / (k + rank)
-
-            # Accumulate score (automatic deduplication)
             if chunk_id in rrf_scores:
                 rrf_scores[chunk_id] += rrf_score
             else:
                 rrf_scores[chunk_id] = rrf_score
                 chunk_map[chunk_id] = result
 
-    # Sort by combined RRF score (descending)
     sorted_chunks = sorted(
         rrf_scores.items(),
         key=lambda x: x[1],
-        reverse=True
+        reverse=True,
     )
 
-    # Build final result list with updated similarity scores
     merged_results = []
     for chunk_id, rrf_score in sorted_chunks:
         result = chunk_map[chunk_id]
-        # Create new result with updated similarity (RRF score)
-        merged_result = SearchResult(
-            chunk_id=result.chunk_id,
-            document_id=result.document_id,
-            content=result.content,
-            similarity=rrf_score,  # Combined RRF score
-            metadata=result.metadata,
-            document_title=result.document_title,
-            document_source=result.document_source
+        merged_results.append(
+            SearchResult(
+                chunk_id=result.chunk_id,
+                document_id=result.document_id,
+                content=result.content,
+                similarity=rrf_score,
+                metadata=result.metadata,
+                document_title=result.document_title,
+                document_source=result.document_source,
+            )
         )
-        merged_results.append(merged_result)
 
-    logger.info(f"RRF mesclou {len(search_results_list)} listas de resultados em {len(merged_results)} resultados únicos")
-
+    logger.info(
+        f"RRF mesclou {len(search_results_list)} listas em {len(merged_results)} resultados"
+    )
     return merged_results
 
 
 async def hybrid_search(
     ctx: RunContext[AgentDependencies],
     query: str,
+    project_id: str,
     match_count: Optional[int] = None,
-    text_weight: Optional[float] = None
+    text_weight: Optional[float] = None,
 ) -> List[SearchResult]:
     """
-    Perform hybrid search combining semantic and keyword matching.
-
-    Uses manual Reciprocal Rank Fusion (RRF) to merge vector and text search results.
-    Works on all Atlas tiers including M0 (free tier) - no M10+ required!
+    Hybrid search: semantic only (Chroma). Text search not implemented.
 
     Args:
-        ctx: Agent runtime context with dependencies
+        ctx: Agent runtime context
         query: Search query text
-        match_count: Number of results to return (default: 10)
-        text_weight: Weight for text matching (0-1, not used with RRF)
+        project_id: Project ID to filter (required)
+        match_count: Number of results
+        text_weight: Unused (Chroma semantic-only)
 
     Returns:
-        List of search results sorted by combined RRF score
-
-    Algorithm:
-        1. Run semantic search (vector similarity)
-        2. Run text search (keyword/fuzzy matching)
-        3. Merge results using Reciprocal Rank Fusion
-        4. Return top N results by combined score
+        List of search results from semantic search
     """
-    try:
-        deps = ctx.deps
+    return await semantic_search(ctx, query, project_id, match_count)
 
-        # Use defaults if not specified
-        if match_count is None:
-            match_count = deps.settings.default_match_count
 
-        # Validate match count
-        match_count = min(match_count, deps.settings.max_match_count)
+async def multi_project_search(
+    ctx: RunContext[AgentDependencies],
+    query: str,
+    tag: str,
+    match_count_per_project: int = 5,
+) -> List[SearchResult]:
+    """
+    Semantic search across all projects that have the given tag.
 
-        # Over-fetch for better RRF results (2x requested count)
-        fetch_count = match_count * 2
+    Runs one query per project with where project_id, then merges and
+    deduplicates by chunk_id, sorted by similarity.
 
-        logger.info(f"Busca híbrida iniciando: query='{query}', match_count={match_count}")
+    Args:
+        ctx: Agent runtime context
+        query: Search query text
+        tag: Tag to select projects (e.g. "flutter")
+        match_count_per_project: Max results per project
 
-        # Run both searches concurrently for performance
-        semantic_results, text_results = await asyncio.gather(
-            semantic_search(ctx, query, fetch_count),
-            text_search(ctx, query, fetch_count),
-            return_exceptions=True  # Don't fail if one search errors
+    Returns:
+        Merged list of search results (deduped by chunk_id, sorted by similarity)
+    """
+    projects = get_projects_by_tag(tag)
+    if not projects:
+        logger.warning(f"Nenhum projeto com tag '{tag}'")
+        return []
+
+    all_results: List[SearchResult] = []
+    seen_ids: set[str] = set()
+    for p in projects:
+        project_id = p["project_id"]
+        results = await semantic_search(
+            ctx, query, project_id=project_id, match_count=match_count_per_project
         )
+        for r in results:
+            if r.chunk_id not in seen_ids:
+                seen_ids.add(r.chunk_id)
+                all_results.append(r)
 
-        # Handle errors gracefully
-        if isinstance(semantic_results, Exception):
-            logger.warning(f"Busca semântica falhou: {semantic_results}, usando apenas resultados de texto")
-            semantic_results = []
-        if isinstance(text_results, Exception):
-            logger.warning(f"Busca textual falhou: {text_results}, usando apenas resultados semânticos")
-            text_results = []
+    all_results.sort(key=lambda x: x.similarity, reverse=True)
+    logger.info(
+        f"Busca multi-projeto: tag={tag}, projetos={len(projects)}, resultados={len(all_results)}"
+    )
+    return all_results
 
-        # If both failed, return empty
-        if not semantic_results and not text_results:
-            logger.error("Ambas as buscas (semântica e textual) falharam")
-            return []
 
-        # Merge results using Reciprocal Rank Fusion
-        merged_results = reciprocal_rank_fusion(
-            [semantic_results, text_results],
-            k=60  # Standard RRF constant
-        )
+def build_rag_context(
+    results: List[SearchResult],
+    max_tokens: Optional[int] = None,
+) -> str:
+    """
+    Build context string from search results for RAG prompt.
 
-        # Return top N results
-        final_results = merged_results[:match_count]
+    Args:
+        results: Search results (content will be concatenated)
+        max_tokens: Optional token limit (rough: 4 chars per token)
 
-        logger.info(
-            f"Busca híbrida concluída: query='{query}', "
-            f"semantica={len(semantic_results)}, textual={len(text_results)}, "
-            f"mesclados={len(merged_results)}, retornados={len(final_results)}"
-        )
-
-        return final_results
-
-    except Exception as e:
-        logger.exception(f"Erro na busca híbrida: query={query}, erro={str(e)}")
-        # Graceful degradation: try semantic-only as last resort
-        try:
-            logger.info("Usando apenas busca semântica como fallback")
-            return await semantic_search(ctx, query, match_count)
-        except:
-            return []
+    Returns:
+        Context string (documents joined by double newline)
+    """
+    parts = [r.content for r in results if r.content]
+    context = "\n\n".join(parts)
+    if max_tokens and max_tokens > 0:
+        rough_chars = max_tokens * 4
+        if len(context) > rough_chars:
+            context = context[:rough_chars] + "\n\n[... truncado]"
+    return context

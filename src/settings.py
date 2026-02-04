@@ -1,4 +1,4 @@
-"""Settings configuration for MongoDB RAG Agent."""
+"""Settings configuration for RAG Agent."""
 
 from pydantic_settings import BaseSettings
 from pydantic import Field, ConfigDict
@@ -17,27 +17,10 @@ class Settings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", case_sensitive=False, extra="ignore"
     )
 
-    # MongoDB Configuration
-    mongodb_uri: str = Field(..., description="MongoDB Atlas connection string")
-
-    mongodb_database: str = Field(default="rag_db", description="MongoDB database name")
-
-    mongodb_collection_documents: str = Field(
-        default="documents", description="Collection for source documents"
-    )
-
-    mongodb_collection_chunks: str = Field(
-        default="chunks", description="Collection for document chunks with embeddings"
-    )
-
-    mongodb_vector_index: str = Field(
-        default="vector_index",
-        description="Vector search index name (must be created in Atlas UI)",
-    )
-
-    mongodb_text_index: str = Field(
-        default="text_index",
-        description="Full-text search index name (must be created in Atlas UI)",
+    # Chroma (vector store)
+    chroma_path: str = Field(
+        default="./chroma_data",
+        description="Path for Chroma persistent storage",
     )
 
     # LLM Configuration (OpenAI-compatible)
@@ -93,40 +76,30 @@ class Settings(BaseSettings):
 def validate_environment_variables() -> tuple[bool, list[str]]:
     """
     Valida todas as variáveis de ambiente obrigatórias.
-    
+
     Returns:
         Tuple de (sucesso: bool, erros: list[str])
     """
     erros = []
-    
-    # Variáveis obrigatórias
+
     variaveis_obrigatorias = {
-        "MONGODB_URI": "URI de conexão do MongoDB Atlas",
         "LLM_API_KEY": "Chave API do provedor LLM",
-        "EMBEDDING_API_KEY": "Chave API do provedor de embeddings"
+        "EMBEDDING_API_KEY": "Chave API do provedor de embeddings",
     }
-    
-    # Verificar presença e valores não vazios
+
     for var_name, descricao in variaveis_obrigatorias.items():
         valor = os.getenv(var_name)
         if not valor or not valor.strip():
             erros.append(f"{var_name} ({descricao}) não está definida ou está vazia")
-    
-    # Validar formato do MongoDB URI
-    mongodb_uri = os.getenv("MONGODB_URI", "").strip()
-    if mongodb_uri:
-        if not (mongodb_uri.startswith("mongodb://") or mongodb_uri.startswith("mongodb+srv://")):
-            erros.append("MONGODB_URI deve começar com 'mongodb://' ou 'mongodb+srv://'")
-    
-    # Validar que API keys não são apenas espaços
+
     llm_key = os.getenv("LLM_API_KEY", "").strip()
     if llm_key and len(llm_key) < 10:
         erros.append("LLM_API_KEY parece ser inválida (muito curta)")
-    
+
     embedding_key = os.getenv("EMBEDDING_API_KEY", "").strip()
     if embedding_key and len(embedding_key) < 10:
         erros.append("EMBEDDING_API_KEY parece ser inválida (muito curta)")
-    
+
     return (len(erros) == 0, erros)
 
 
@@ -136,8 +109,6 @@ def load_settings() -> Settings:
         return Settings()
     except Exception as e:
         error_msg = f"Falha ao carregar configurações: {e}"
-        if "mongodb_uri" in str(e).lower():
-            error_msg += "\nCertifique-se de definir MONGODB_URI no seu arquivo .env"
         if "llm_api_key" in str(e).lower():
             error_msg += "\nCertifique-se de definir LLM_API_KEY no seu arquivo .env"
         if "embedding_api_key" in str(e).lower():

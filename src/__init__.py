@@ -1,1 +1,1 @@
-"""MongoDB RAG Agent - Intelligent Knowledge Base Search."""
+"""RAG Agent - Knowledge base search by project (Chroma)."""

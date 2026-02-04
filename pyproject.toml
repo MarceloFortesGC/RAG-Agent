@@ -1,14 +1,14 @@
 [project]
 name = "mongodb-rag-agent"
 version = "0.1.0"
-description = "Agentic RAG system with MongoDB Atlas Vector Search"
+description = "Agentic RAG system with Chroma vector store and projects"
 requires-python = ">=3.10"
 dependencies = [
     "pydantic>=2.10.0",
     "pydantic-settings>=2.7.0",
     "pydantic-ai>=0.1.0",
-    "pymongo>=4.10.0",
     "openai>=1.58.0",
+    "chromadb>=0.4.0",
     "docling>=2.14.0",
     "docling-core>=2.4.0",
     "transformers>=4.47.0",

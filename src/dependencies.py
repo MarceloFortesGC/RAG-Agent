@@ -1,11 +1,10 @@
-"""Dependencies for MongoDB RAG Agent."""
+"""Dependencies for RAG Agent."""
 
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 import logging
-from pymongo import AsyncMongoClient
-from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 import openai
+import chromadb
 from src.settings import load_settings
 
 logger = logging.getLogger(__name__)
@@ -16,10 +15,10 @@ class AgentDependencies:
     """Dependencies injected into the agent context."""
 
     # Core dependencies
-    mongo_client: Optional[AsyncMongoClient] = None
-    db: Optional[Any] = None
     openai_client: Optional[openai.AsyncOpenAI] = None
     settings: Optional[Any] = None
+    chroma_client: Optional[Any] = None
+    chroma_collection: Optional[Any] = None
 
     # Session context
     session_id: Optional[str] = None
@@ -28,54 +27,39 @@ class AgentDependencies:
 
     async def initialize(self) -> None:
         """
-        Initialize external connections.
+        Initialize external connections (OpenAI embeddings, Chroma).
 
         Raises:
-            ConnectionFailure: If MongoDB connection fails
-            ServerSelectionTimeoutError: If MongoDB server selection times out
             ValueError: If settings cannot be loaded
         """
         if not self.settings:
             self.settings = load_settings()
-            logger.info(f"Configurações carregadas: database={self.settings.mongodb_database}")
+            logger.info("Configurações carregadas")
 
-        # Initialize MongoDB client
-        if not self.mongo_client:
-            try:
-                self.mongo_client = AsyncMongoClient(
-                    self.settings.mongodb_uri, serverSelectionTimeoutMS=5000
-                )
-                self.db = self.mongo_client[self.settings.mongodb_database]
+        # Chroma: one collection for all projects
+        if not self.chroma_client:
+            self.chroma_client = chromadb.PersistentClient(path=self.settings.chroma_path)
+            self.chroma_collection = self.chroma_client.get_or_create_collection(
+                name="rag_chunks",
+                metadata={"description": "Chunks de todos os projetos"},
+            )
+            logger.info(f"Chroma: {self.settings.chroma_path}, collection=rag_chunks")
 
-                # Verify connection with ping
-                await self.mongo_client.admin.command("ping")
-                logger.info(
-                    f"MongoDB conectado: database={self.settings.mongodb_database}, "
-                    f"collections={{documents: {self.settings.mongodb_collection_documents}, "
-                    f"chunks: {self.settings.mongodb_collection_chunks}}}"
-                )
-            except (ConnectionFailure, ServerSelectionTimeoutError) as e:
-                logger.exception(f"Falha na conexão MongoDB: erro={str(e)}")
-                raise
-
-        # Initialize OpenAI client for embeddings
+        # OpenAI client for embeddings
         if not self.openai_client:
             self.openai_client = openai.AsyncOpenAI(
                 api_key=self.settings.embedding_api_key,
                 base_url=self.settings.embedding_base_url,
             )
             logger.info(
-                f"Cliente OpenAI inicializado: model={self.settings.embedding_model}, "
+                f"Cliente OpenAI: model={self.settings.embedding_model}, "
                 f"dimension={self.settings.embedding_dimension}"
             )
 
     async def cleanup(self) -> None:
         """Clean up external connections."""
-        if self.mongo_client:
-            await self.mongo_client.close()
-            self.mongo_client = None
-            self.db = None
-            logger.info("Conexão MongoDB fechada")
+        # Chroma PersistentClient does not require explicit close
+        pass
 
     async def get_embedding(self, text: str) -> list[float]:
         """
@@ -96,7 +80,6 @@ class AgentDependencies:
         response = await self.openai_client.embeddings.create(
             model=self.settings.embedding_model, input=text
         )
-        # Return as list of floats - MongoDB stores as native array
         return response.data[0].embedding
 
     def set_user_preference(self, key: str, value: Any) -> None:
@@ -117,6 +100,5 @@ class AgentDependencies:
             query: Search query to add to history
         """
         self.query_history.append(query)
-        # Keep only last 10 queries
         if len(self.query_history) > 10:
             self.query_history.pop(0)

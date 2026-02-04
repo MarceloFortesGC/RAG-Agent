@@ -165,8 +165,8 @@ def display_welcome():
     settings = load_settings()
 
     welcome = Panel(
-        "[bold blue]MongoDB RAG Agent[/bold blue]\n\n"
-        "[green]Busca inteligente em base de conhecimento com MongoDB Atlas Vector Search[/green]\n"
+        "[bold blue]RAG Agent[/bold blue]\n\n"
+        "[green]Busca em base de conhecimento por projeto (Chroma)[/green]\n"
         f"[dim]LLM: {settings.llm_model}[/dim]\n\n"
         "[dim]Digite 'exit' para sair, 'info' para informações do sistema, 'clear' para limpar a tela[/dim]",
         style="blue",

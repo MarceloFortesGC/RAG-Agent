@@ -45,3 +45,19 @@ uv.lock
 
 # Logs
 *.log
+
+# Documents
+documents
+
+# Chroma vector database
+chroma/
+chroma_db/
+chromadb/
+chroma_data/
+data/chroma/
+data/chromadb/
+*.duckdb
+*.duckdb.wal
+*.parquet
+.cache/
+.cache/chromadb/
