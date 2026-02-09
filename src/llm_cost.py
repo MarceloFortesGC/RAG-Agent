@@ -1,6 +1,14 @@
 """Estimativa de custo por uso de tokens do LLM (OpenRouter/OpenAI-compatible)."""
 
+import asyncio
+import json
+import logging
+import urllib.request
 from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+CURRENCY_API_URL = "https://api.freecurrencyapi.com/v1/latest"
 
 # Preços em USD por 1M tokens (input, output). Fontes: OpenRouter/fornecedores.
 # Modelos não listados exibem apenas contagem de tokens.
@@ -17,6 +25,35 @@ _MODEL_PRICING: dict[str, tuple[float, float]] = {
     "google/gemini-2.5-flash-preview": (0.15, 0.60),
     "google/gemini-2.5-pro-preview": (1.25, 10.0),
 }
+
+
+async def fetch_usd_to_brl_rate(api_key: Optional[str]) -> Optional[float]:
+    """
+    Obtém taxa USD/BRL da Free Currency API (executada a cada cálculo de custo).
+
+    Args:
+        api_key: CURRENCY_API_KEY do .env. Se vazio, retorna None.
+
+    Returns:
+        Taxa BRL por 1 USD (ex: 5.239) ou None em caso de falha.
+    """
+
+    if not api_key or not api_key.strip():
+        return None
+
+    url = f"{CURRENCY_API_URL}?apikey={api_key}&currencies=BRL"
+
+    def _get() -> Optional[float]:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+            return data.get("data", {}).get("BRL")
+
+    try:
+        rate = await asyncio.to_thread(_get)
+        return float(rate) if rate is not None else None
+    except Exception as e:
+        logger.warning("currency_api_failed: %s", str(e))
+        return None
 
 
 def _find_pricing(model_id: str) -> Optional[tuple[float, float]]:

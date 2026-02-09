@@ -75,7 +75,12 @@ class Settings(BaseSettings):
     # Custo LLM (exibição em BRL)
     usd_to_brl_rate: float = Field(
         default=5.5,
-        description="Taxa USD/BRL para exibir custo estimado em reais (LLM_COST_USD_BRL)",
+        description="Taxa USD/BRL fallback quando API de câmbio não disponível (USD_TO_BRL_RATE)",
+    )
+
+    currency_api_key: Optional[str] = Field(
+        default=None,
+        description="API key Free Currency API para obter taxa USD/BRL em tempo real (CURRENCY_API_KEY)",
     )
 
 

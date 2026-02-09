@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 # Import our agent and dependencies
 from src.agent import rag_agent, RAGState
 from src.settings import load_settings, validate_environment_variables
-from src.llm_cost import format_usage_and_cost
+from src.llm_cost import fetch_usd_to_brl_rate, format_usage_and_cost
 
 # Load environment variables
 load_dotenv(override=True)
@@ -161,12 +161,15 @@ async def _stream_agent(
     try:
         usage = run.result.usage()
         settings = load_settings()
+        usd_to_brl = await fetch_usd_to_brl_rate(settings.currency_api_key)
+        if usd_to_brl is None:
+            usd_to_brl = settings.usd_to_brl_rate
         usage_line = format_usage_and_cost(
             usage.input_tokens,
             usage.output_tokens,
             usage.total_tokens,
             settings.llm_model,
-            usd_to_brl=settings.usd_to_brl_rate,
+            usd_to_brl=usd_to_brl,
         )
         console.print(f"  [dim]{usage_line}[/dim]")
     except Exception:
