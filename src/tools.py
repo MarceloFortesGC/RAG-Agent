@@ -1,52 +1,42 @@
-"""Search tools for RAG Agent (Chroma)."""
+"""Search tools for RAG Agent (Chroma). Uses RAGDependencies from core."""
 
 import asyncio
 import logging
-from typing import Optional, List, Dict, Any
-from pydantic_ai import RunContext
-from pydantic import BaseModel, Field
+from typing import Dict, List, Optional
 
-from src.dependencies import AgentDependencies
+from src.core.deps import RAGDependencies
+from src.core.models import SearchChunk
 from src.projects import get_projects_by_tag
 
 logger = logging.getLogger(__name__)
 
 
-class SearchResult(BaseModel):
-    """Model for search results (Chroma: chunk_id, content from documents, metadata)."""
-
-    chunk_id: str = Field(..., description="Chunk ID (project_id:doc_slug:index)")
-    document_id: str = Field(default="", description="Legacy; use chunk_id")
-    content: str = Field(..., description="Chunk text content")
-    similarity: float = Field(..., description="Relevance score (0-1)")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Chunk metadata")
-    document_title: str = Field(..., description="Document title from metadata")
-    document_source: str = Field(..., description="Document path/source from metadata")
+def _dist_to_similarity(d: float) -> float:
+    if d is None:
+        return 0.0
+    return 1.0 / (1.0 + d)
 
 
 async def semantic_search(
-    ctx: RunContext[AgentDependencies],
+    deps: RAGDependencies,
     query: str,
     project_id: str,
     match_count: Optional[int] = None,
-) -> List[SearchResult]:
+) -> List[SearchChunk]:
     """
     Semantic search in Chroma filtered by project_id (always with where).
 
     Args:
-        ctx: Agent runtime context with dependencies
+        deps: RAG dependencies (Chroma + embedding)
         query: Search query text
         project_id: Project ID to filter (required)
-        match_count: Number of results to return (default: 10)
+        match_count: Number of results to return (default from settings)
 
     Returns:
-        List of search results ordered by similarity
+        List of search chunks ordered by similarity
     """
     try:
-        deps = ctx.deps
-        if not deps.chroma_collection:
-            await deps.initialize()
-
+        deps.initialize()
         if match_count is None:
             match_count = deps.settings.default_match_count
         match_count = min(match_count, deps.settings.max_match_count)
@@ -71,23 +61,16 @@ async def semantic_search(
         metas = metas_list[0] if metas_list else []
         dists = dists_list[0] if dists_list else []
 
-        # Chroma returns distances (L2: lower = more similar). Map to similarity in (0, 1].
-        def dist_to_similarity(d: float) -> float:
-            if d is None:
-                return 0.0
-            return 1.0 / (1.0 + d)
-
-        search_results = []
+        chunks: List[SearchChunk] = []
         for i, chunk_id in enumerate(ids):
             meta = metas[i] if i < len(metas) else {}
             content = docs[i] if i < len(docs) else ""
             dist = dists[i] if i < len(dists) else 0.0
-            search_results.append(
-                SearchResult(
+            chunks.append(
+                SearchChunk(
                     chunk_id=str(chunk_id),
-                    document_id="",
                     content=content,
-                    similarity=dist_to_similarity(dist),
+                    similarity=_dist_to_similarity(dist),
                     metadata=meta,
                     document_title=meta.get("document_title", ""),
                     document_source=meta.get("document_path", ""),
@@ -95,26 +78,27 @@ async def semantic_search(
             )
 
         logger.info(
-            f"Busca semântica: query={query}, project_id={project_id}, resultados={len(search_results)}"
+            "Busca semântica: query=%s, project_id=%s, resultados=%s",
+            query[:50], project_id, len(chunks),
         )
-        return search_results
+        return chunks
 
     except Exception as e:
-        logger.exception(f"Busca semântica falhou: query={query}, erro={str(e)}")
+        logger.exception("Busca semântica falhou: query=%s, erro=%s", query[:50], str(e))
         return []
 
 
 async def text_search(
-    ctx: RunContext[AgentDependencies],
+    deps: RAGDependencies,
     query: str,
     project_id: str,
     match_count: Optional[int] = None,
-) -> List[SearchResult]:
+) -> List[SearchChunk]:
     """
     Full-text search (not implemented with Chroma; returns empty).
 
     Args:
-        ctx: Agent runtime context
+        deps: RAG dependencies
         query: Search query text
         project_id: Project ID to filter
         match_count: Number of results
@@ -126,9 +110,9 @@ async def text_search(
 
 
 def reciprocal_rank_fusion(
-    search_results_list: List[List[SearchResult]],
+    search_results_list: List[List[SearchChunk]],
     k: int = 60,
-) -> List[SearchResult]:
+) -> List[SearchChunk]:
     """
     Merge multiple ranked lists using Reciprocal Rank Fusion.
 
@@ -140,17 +124,16 @@ def reciprocal_rank_fusion(
         Unified list sorted by combined RRF score
     """
     rrf_scores: Dict[str, float] = {}
-    chunk_map: Dict[str, SearchResult] = {}
+    chunk_map: Dict[str, SearchChunk] = {}
 
     for results in search_results_list:
         for rank, result in enumerate(results):
-            chunk_id = result.chunk_id
             rrf_score = 1.0 / (k + rank)
-            if chunk_id in rrf_scores:
-                rrf_scores[chunk_id] += rrf_score
+            if result.chunk_id in rrf_scores:
+                rrf_scores[result.chunk_id] += rrf_score
             else:
-                rrf_scores[chunk_id] = rrf_score
-                chunk_map[chunk_id] = result
+                rrf_scores[result.chunk_id] = rrf_score
+                chunk_map[result.chunk_id] = result
 
     sorted_chunks = sorted(
         rrf_scores.items(),
@@ -158,13 +141,12 @@ def reciprocal_rank_fusion(
         reverse=True,
     )
 
-    merged_results = []
+    merged: List[SearchChunk] = []
     for chunk_id, rrf_score in sorted_chunks:
         result = chunk_map[chunk_id]
-        merged_results.append(
-            SearchResult(
+        merged.append(
+            SearchChunk(
                 chunk_id=result.chunk_id,
-                document_id=result.document_id,
                 content=result.content,
                 similarity=rrf_score,
                 metadata=result.metadata,
@@ -173,67 +155,62 @@ def reciprocal_rank_fusion(
             )
         )
 
-    logger.info(
-        f"RRF mesclou {len(search_results_list)} listas em {len(merged_results)} resultados"
-    )
-    return merged_results
+    logger.info("RRF mesclou %s listas em %s resultados", len(search_results_list), len(merged))
+    return merged
 
 
 async def hybrid_search(
-    ctx: RunContext[AgentDependencies],
+    deps: RAGDependencies,
     query: str,
     project_id: str,
     match_count: Optional[int] = None,
     text_weight: Optional[float] = None,
-) -> List[SearchResult]:
+) -> List[SearchChunk]:
     """
     Hybrid search: semantic only (Chroma). Text search not implemented.
 
     Args:
-        ctx: Agent runtime context
+        deps: RAG dependencies
         query: Search query text
         project_id: Project ID to filter (required)
         match_count: Number of results
         text_weight: Unused (Chroma semantic-only)
 
     Returns:
-        List of search results from semantic search
+        List of search chunks from semantic search
     """
-    return await semantic_search(ctx, query, project_id, match_count)
+    return await semantic_search(deps, query, project_id, match_count)
 
 
 async def multi_project_search(
-    ctx: RunContext[AgentDependencies],
+    deps: RAGDependencies,
     query: str,
     tag: str,
     match_count_per_project: int = 5,
-) -> List[SearchResult]:
+) -> List[SearchChunk]:
     """
     Semantic search across all projects that have the given tag.
 
-    Runs one query per project with where project_id, then merges and
-    deduplicates by chunk_id, sorted by similarity.
-
     Args:
-        ctx: Agent runtime context
+        deps: RAG dependencies
         query: Search query text
         tag: Tag to select projects (e.g. "flutter")
         match_count_per_project: Max results per project
 
     Returns:
-        Merged list of search results (deduped by chunk_id, sorted by similarity)
+        Merged list (deduped by chunk_id, sorted by similarity)
     """
     projects = get_projects_by_tag(tag)
     if not projects:
-        logger.warning(f"Nenhum projeto com tag '{tag}'")
+        logger.warning("Nenhum projeto com tag '%s'", tag)
         return []
 
-    all_results: List[SearchResult] = []
+    all_results: List[SearchChunk] = []
     seen_ids: set[str] = set()
     for p in projects:
         project_id = p["project_id"]
         results = await semantic_search(
-            ctx, query, project_id=project_id, match_count=match_count_per_project
+            deps, query, project_id=project_id, match_count=match_count_per_project
         )
         for r in results:
             if r.chunk_id not in seen_ids:
@@ -242,26 +219,27 @@ async def multi_project_search(
 
     all_results.sort(key=lambda x: x.similarity, reverse=True)
     logger.info(
-        f"Busca multi-projeto: tag={tag}, projetos={len(projects)}, resultados={len(all_results)}"
+        "Busca multi-projeto: tag=%s, projetos=%s, resultados=%s",
+        tag, len(projects), len(all_results),
     )
     return all_results
 
 
 def build_rag_context(
-    results: List[SearchResult],
+    chunks: List[SearchChunk],
     max_tokens: Optional[int] = None,
 ) -> str:
     """
-    Build context string from search results for RAG prompt.
+    Build context string from search chunks for RAG prompt.
 
     Args:
-        results: Search results (content will be concatenated)
+        chunks: Search chunks (content will be concatenated)
         max_tokens: Optional token limit (rough: 4 chars per token)
 
     Returns:
         Context string (documents joined by double newline)
     """
-    parts = [r.content for r in results if r.content]
+    parts = [c.content for c in chunks if c.content]
     context = "\n\n".join(parts)
     if max_tokens and max_tokens > 0:
         rough_chars = max_tokens * 4

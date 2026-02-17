@@ -68,17 +68,46 @@ uv run python -m src.cli
 - Busca em um projeto: a ferramenta usa o primeiro projeto de `projects.json` ou você informa `project_id`
 - Busca em vários projetos (ex.: Flutter): use `tag="flutter"` na ferramenta
 
+### 7. MCP Server (search-only, stdio)
+
+Para uso no Cursor ou outro cliente MCP: expõe a tool `search_knowledge_base` (sem LLM).
+
+```bash
+uv run python -m src.mcp.server
+```
+
+Configure no cliente MCP o comando: `uv run python -m src.mcp.server` com transport stdio.
+
+### 8. API REST
+
+Busca via HTTP: `POST /search` e `GET /health`. Sem LLM.
+
+```bash
+uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+```
+
+- **Health**: `curl http://localhost:8000/health`
+- **Search**: `curl -X POST http://localhost:8000/search -H "Content-Type: application/json" -d '{"query":"sua pergunta","project_id":"master_detox","match_count":5}'`
+
 ## Estrutura do Projeto
 
 ```
 src/
-  agent.py          # Agente Pydantic AI (busca por project_id ou tag)
-  dependencies.py   # Chroma + OpenAI embeddings
+  core/             # RAG Core reutilizável (MCP + API + CLI)
+    deps.py         # RAGDependencies (Chroma + embedding, uma vez)
+    models.py       # SearchQuery, SearchChunk, SearchResult
+    rag_core.py     # RAGCore.search()
+  agent.py          # Agente Pydantic AI (usa RAGCore injetado)
+  dependencies.py   # AgentDependencies (legado)
   projects.json     # Definição de projetos (não vai para o Chroma)
   projects.py       # resolve_project, get_projects_by_tag
-  tools.py          # semantic_search, multi_project_search, build_rag_context
-  ingestion/
+  tools.py          # semantic_search, multi_project_search (recebem RAGDependencies)
+  ingestion/        # Inalterado: pipeline de ingestão
     ingest.py       # Pipeline: resolve_project → chunk → embed → Chroma add
+  api/
+    main.py        # FastAPI: POST /search, GET /health
+  mcp/
+    server.py      # MCP stdio: tool search_knowledge_base
 ```
 
 ## Checklist

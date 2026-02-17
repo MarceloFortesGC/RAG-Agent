@@ -16,8 +16,10 @@ from dotenv import load_dotenv
 
 # Import our agent and dependencies
 from src.agent import rag_agent, RAGState
-from src.settings import load_settings, validate_environment_variables
+from src.core.deps import RAGDependencies
+from src.core.rag_core import RAGCore
 from src.llm_cost import fetch_usd_to_brl_rate, format_usage_and_cost
+from src.settings import load_settings, validate_environment_variables
 
 # Load environment variables
 load_dotenv(override=True)
@@ -213,8 +215,13 @@ async def main():
     # Show welcome
     display_welcome()
 
-    # Create the state that the agent will use
-    state = RAGState()
+    # RAG Core: single deps + core (no Chroma/embedding creation in agent tools)
+    rag_deps = RAGDependencies()
+    rag_deps.initialize()
+    rag_core = RAGCore(rag_deps)
+
+    # Create the state that the agent will use (rag_core injected)
+    state = RAGState(rag_core=rag_core)
 
     # Create StateDeps wrapper with the state
     deps = StateDeps[RAGState](state=state)
